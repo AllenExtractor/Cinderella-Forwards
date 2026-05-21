@@ -1,29 +1,30 @@
 """
 settings.py — Cinderella-Forwards Bot Settings
 
-Commands (group only, AUTH_USERS only):
-  /setsource    — Set source channel/group ID to forward FROM
-  /settarget    — Set target channel/group ID to forward TO
-  /setkeywords  — Set keyword filter (max 2 words, 1 or 2 space-separated words)
-  /offkeywords  — Disable keyword filter (forward all videos & PDFs)
-  /viewsettings — Show current settings
-  /setdelay     — Set delay in seconds between forwards (default: 3)
+All commands now work in both GROUP and PRIVATE chats.
+Full button-based UI with inline menus.
 """
 
 import asyncio
 import re
 
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+)
 
 import globals
+import bot_manager
 from vars import AUTH_USERS
 
 TIMEOUT = 300
 
-# ── Keyword validation ──────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def is_auth(user_id: int) -> bool:
+    return user_id in AUTH_USERS
+
 def validate_keyword(kw: str) -> bool:
-    """Max 2 words, each word alphanumeric (letters/digits), separated by single space."""
     kw = kw.strip()
     parts = kw.split(" ")
     if len(parts) < 1 or len(parts) > 2:
@@ -31,42 +32,92 @@ def validate_keyword(kw: str) -> bool:
     for part in parts:
         if not part:
             return False
-        # Allow letters, digits, underscores
         if not re.match(r"^[\w]+$", part, re.UNICODE):
             return False
     return True
 
+# ── Main Settings Menu ────────────────────────────────────────────────────────
+
+def settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📡 Set Source", callback_data="set_source"),
+            InlineKeyboardButton("🎯 Set Target", callback_data="set_target"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Set Keywords", callback_data="set_keywords"),
+            InlineKeyboardButton("🔕 Off Keywords", callback_data="off_keywords"),
+        ],
+        [
+            InlineKeyboardButton("⏱️ Set Delay", callback_data="set_delay"),
+            InlineKeyboardButton("📊 View Settings", callback_data="view_settings"),
+        ],
+        [
+            InlineKeyboardButton("🤖 Add Bot", callback_data="add_bot_menu"),
+        ],
+        [InlineKeyboardButton("🔙 Back to Home", callback_data="back_home")]
+    ])
+
+def add_bot_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 Bot (BotFather Token)", callback_data="add_botfather_bot")],
+        [InlineKeyboardButton("👤 User Bot (Phone Login)", callback_data="add_user_bot")],
+        [InlineKeyboardButton("🔙 Back to Settings", callback_data="open_settings")],
+    ])
+
 
 def register_settings_handlers(bot: Client):
 
-    # ── /setsource ──────────────────────────────────────────────────────────
-    @bot.on_message(filters.command("setsource") & filters.group)
-    async def setsource_cmd(client: Client, m: Message):
+    # ── /settings ─────────────────────────────────────────────────────────────
+    @bot.on_message(filters.command("settings") & (filters.group | filters.private))
+    async def settings_cmd(client: Client, m: Message):
         user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
+        if not is_auth(user_id):
             await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
             return
-
-        await m.delete()
-        editable = await client.send_message(
-            m.chat.id,
-            "**⚙️ Set Source Channel/Group**\n\n"
-            "Send the **Source Chat ID** (channel or group) from which to forward.\n"
-            "<blockquote>Example: `-1001234567890`\n"
-            "• If public channel — bot only needed\n"
-            "• If private — userbot session required (set SESSION_STRING in env)\n"
-            "Send /cancel to abort.</blockquote>"
+        await m.reply_text(
+            "⚙️ **Cinderella-Forwards Settings**\n\nChoose what to configure:",
+            reply_markup=settings_keyboard()
         )
 
+    # ── Open Settings ─────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^open_settings$"))
+    async def open_settings_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+        await cq.message.edit_text(
+            "⚙️ **Cinderella-Forwards Settings**\n\nChoose what to configure:",
+            reply_markup=settings_keyboard()
+        )
+        await cq.answer()
+
+    # ── Set Source ────────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^set_source$"))
+    async def set_source_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+        await cq.answer()
+        await cq.message.edit_text(
+            "**📡 Set Source Channel/Group**\n\n"
+            "Send the **Source Chat ID** (numeric):\n"
+            "<blockquote>Example: `-1001234567890`\n"
+            "• Public channel → bot must be a member\n"
+            "• Private channel → add User Bot via 🤖 Add Bot\n"
+            "Send /cancel to abort.</blockquote>"
+        )
         try:
-            reply: Message = await bot.listen(m.chat.id, timeout=TIMEOUT)
+            reply: Message = await bot.listen(cq.message.chat.id, timeout=TIMEOUT)
         except asyncio.TimeoutError:
-            await editable.edit("⏰ Timeout. Use /setsource to try again.")
+            await cq.message.edit_text("⏰ Timeout.", reply_markup=settings_keyboard())
             return
 
         if reply.text and reply.text.strip().lower() == "/cancel":
             await reply.delete()
-            await editable.edit("❌ Cancelled.")
+            await cq.message.edit_text("❌ Cancelled.", reply_markup=settings_keyboard())
             return
 
         raw = reply.text.strip() if reply.text else ""
@@ -75,42 +126,39 @@ def register_settings_handlers(bot: Client):
         try:
             source_id = int(raw)
         except ValueError:
-            await editable.edit("❌ Invalid ID. Must be a numeric chat ID like `-1001234567890`.")
+            await cq.message.edit_text("❌ Invalid ID. Must be numeric.", reply_markup=settings_keyboard())
             return
 
         globals.set_setting("source_chat_id", source_id)
-        await editable.edit(
-            f"✅ **Source Chat updated!**\n\n"
-            f"<blockquote>📡 Source Chat ID:\n`{source_id}`</blockquote>"
+        await cq.message.edit_text(
+            f"✅ **Source Chat updated!**\n\n<blockquote>📡 Source: `{source_id}`</blockquote>",
+            reply_markup=settings_keyboard()
         )
 
-    # ── /settarget ──────────────────────────────────────────────────────────
-    @bot.on_message(filters.command("settarget") & filters.group)
-    async def settarget_cmd(client: Client, m: Message):
-        user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
-            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+    # ── Set Target ────────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^set_target$"))
+    async def set_target_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
             return
-
-        await m.delete()
-        editable = await client.send_message(
-            m.chat.id,
-            "**⚙️ Set Target Channel/Group**\n\n"
-            "Send the **Target Chat ID** where files will be forwarded TO.\n"
+        await cq.answer()
+        await cq.message.edit_text(
+            "**🎯 Set Target Channel/Group**\n\n"
+            "Send the **Target Chat ID** (numeric):\n"
             "<blockquote>Example: `-1009876543210`\n"
             "⚠️ Bot must be **Admin** in the target channel/group.\n"
             "Send /cancel to abort.</blockquote>"
         )
-
         try:
-            reply: Message = await bot.listen(m.chat.id, timeout=TIMEOUT)
+            reply: Message = await bot.listen(cq.message.chat.id, timeout=TIMEOUT)
         except asyncio.TimeoutError:
-            await editable.edit("⏰ Timeout. Use /settarget to try again.")
+            await cq.message.edit_text("⏰ Timeout.", reply_markup=settings_keyboard())
             return
 
         if reply.text and reply.text.strip().lower() == "/cancel":
             await reply.delete()
-            await editable.edit("❌ Cancelled.")
+            await cq.message.edit_text("❌ Cancelled.", reply_markup=settings_keyboard())
             return
 
         raw = reply.text.strip() if reply.text else ""
@@ -119,118 +167,99 @@ def register_settings_handlers(bot: Client):
         try:
             target_id = int(raw)
         except ValueError:
-            await editable.edit("❌ Invalid ID. Must be a numeric chat ID like `-1009876543210`.")
+            await cq.message.edit_text("❌ Invalid ID. Must be numeric.", reply_markup=settings_keyboard())
             return
 
         globals.set_setting("target_chat_id", target_id)
-        await editable.edit(
-            f"✅ **Target Chat updated!**\n\n"
-            f"<blockquote>🎯 Target Chat ID:\n`{target_id}`</blockquote>"
+        await cq.message.edit_text(
+            f"✅ **Target Chat updated!**\n\n<blockquote>🎯 Target: `{target_id}`</blockquote>",
+            reply_markup=settings_keyboard()
         )
 
-    # ── /setkeywords ────────────────────────────────────────────────────────
-    @bot.on_message(filters.command("setkeywords") & filters.group)
-    async def setkeywords_cmd(client: Client, m: Message):
-        user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
-            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+    # ── Set Keywords ──────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^set_keywords$"))
+    async def set_keywords_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
             return
-
-        await m.delete()
-        editable = await client.send_message(
-            m.chat.id,
-            "**⚙️ Set Keyword Filter**\n\n"
-            "Send one or more keywords, **one per line**.\n"
-            "<blockquote>Rules:\n"
-            "• Each keyword = 1 or 2 words only\n"
-            "• Max 2 words per keyword (e.g. `Sobiya` or `Sobiya Ji`)\n"
-            "• Files where caption contains ANY keyword will be forwarded\n"
-            "• Other files will be SKIPPED\n\n"
-            "Example:\n`Sobiya`\n`Sobiya Ji`\n`Batch01`\n\n"
-            "Use /offkeywords to disable filtering.\n"
+        await cq.answer()
+        await cq.message.edit_text(
+            "**🔍 Set Keyword Filter**\n\n"
+            "Send keywords — **one per line**:\n"
+            "<blockquote>• Max 2 words per keyword\n"
+            "• Example:\n`Sobiya`\n`Sobiya Ji`\n`Batch01`\n\n"
             "Send /cancel to abort.</blockquote>"
         )
-
         try:
-            reply: Message = await bot.listen(m.chat.id, timeout=TIMEOUT)
+            reply: Message = await bot.listen(cq.message.chat.id, timeout=TIMEOUT)
         except asyncio.TimeoutError:
-            await editable.edit("⏰ Timeout. Use /setkeywords to try again.")
+            await cq.message.edit_text("⏰ Timeout.", reply_markup=settings_keyboard())
             return
 
         if reply.text and reply.text.strip().lower() == "/cancel":
             await reply.delete()
-            await editable.edit("❌ Cancelled.")
+            await cq.message.edit_text("❌ Cancelled.", reply_markup=settings_keyboard())
             return
 
         raw = reply.text.strip() if reply.text else ""
         await reply.delete()
 
-        if not raw:
-            await editable.edit("❌ Empty input. Use /setkeywords to try again.")
-            return
-
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         invalid = [l for l in lines if not validate_keyword(l)]
         if invalid:
             inv_str = "\n".join(f"`{i}`" for i in invalid)
-            await editable.edit(
-                f"❌ **Invalid keywords:**\n{inv_str}\n\n"
-                "Each keyword must be 1 or 2 words only (letters/digits/underscore).\n"
-                "Use /setkeywords to try again."
+            await cq.message.edit_text(
+                f"❌ **Invalid keywords:**\n{inv_str}\n\nMax 2 words each.",
+                reply_markup=settings_keyboard()
             )
             return
 
         globals.set_setting("keywords", lines)
         globals.set_setting("keywords_enabled", True)
-
         kw_str = "\n".join(f"• `{k}`" for k in lines)
-        await editable.edit(
-            f"✅ **Keywords set!**\n\n"
-            f"<blockquote>🔍 Active Keywords:\n{kw_str}\n\n"
-            f"Only videos & PDFs whose caption contains these keywords will be forwarded.</blockquote>"
+        await cq.message.edit_text(
+            f"✅ **Keywords set!**\n\n<blockquote>🔍 Active:\n{kw_str}</blockquote>",
+            reply_markup=settings_keyboard()
         )
 
-    # ── /offkeywords ────────────────────────────────────────────────────────
-    @bot.on_message(filters.command("offkeywords") & filters.group)
-    async def offkeywords_cmd(client: Client, m: Message):
-        user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
-            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+    # ── Off Keywords ──────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^off_keywords$"))
+    async def off_keywords_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
             return
-
         globals.set_setting("keywords_enabled", False)
-        await m.reply_text(
+        await cq.answer("✅ Keywords disabled!", show_alert=False)
+        await cq.message.edit_text(
             "✅ **Keywords filter disabled.**\n\n"
-            "<blockquote>All videos & PDFs from source will be forwarded.</blockquote>"
+            "<blockquote>All videos & PDFs from source will be forwarded.</blockquote>",
+            reply_markup=settings_keyboard()
         )
 
-    # ── /setdelay ───────────────────────────────────────────────────────────
-    @bot.on_message(filters.command("setdelay") & filters.group)
-    async def setdelay_cmd(client: Client, m: Message):
-        user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
-            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+    # ── Set Delay ─────────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^set_delay$"))
+    async def set_delay_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
             return
-
-        await m.delete()
-        editable = await client.send_message(
-            m.chat.id,
-            "**⚙️ Set Forward Delay**\n\n"
-            "Send the **delay in seconds** between each forwarded file.\n"
-            "<blockquote>Default: `3` seconds\n"
-            "Example: `3` or `5`\n"
-            "Send /cancel to abort.</blockquote>"
+        await cq.answer()
+        await cq.message.edit_text(
+            "**⏱️ Set Forward Delay**\n\n"
+            "Send delay in **seconds** between each file:\n"
+            "<blockquote>Default: `3`\nRange: 1–60\nSend /cancel to abort.</blockquote>"
         )
-
         try:
-            reply: Message = await bot.listen(m.chat.id, timeout=TIMEOUT)
+            reply: Message = await bot.listen(cq.message.chat.id, timeout=TIMEOUT)
         except asyncio.TimeoutError:
-            await editable.edit("⏰ Timeout. Use /setdelay to try again.")
+            await cq.message.edit_text("⏰ Timeout.", reply_markup=settings_keyboard())
             return
 
         if reply.text and reply.text.strip().lower() == "/cancel":
             await reply.delete()
-            await editable.edit("❌ Cancelled.")
+            await cq.message.edit_text("❌ Cancelled.", reply_markup=settings_keyboard())
             return
 
         raw = reply.text.strip() if reply.text else ""
@@ -241,44 +270,214 @@ def register_settings_handlers(bot: Client):
             if delay < 1 or delay > 60:
                 raise ValueError
         except ValueError:
-            await editable.edit("❌ Invalid. Enter a number between 1 and 60.")
+            await cq.message.edit_text("❌ Enter a number between 1 and 60.", reply_markup=settings_keyboard())
             return
 
         globals.set_setting("forward_delay", delay)
-        await editable.edit(
-            f"✅ **Delay updated!**\n\n"
-            f"<blockquote>⏱️ Forward Delay: `{delay}` seconds</blockquote>"
+        await cq.message.edit_text(
+            f"✅ **Delay updated!**\n\n<blockquote>⏱️ Forward Delay: `{delay}s`</blockquote>",
+            reply_markup=settings_keyboard()
         )
 
-    # ── /viewsettings ───────────────────────────────────────────────────────
-    @bot.on_message(filters.command("viewsettings") & filters.group)
+    # ── View Settings ─────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^view_settings$"))
+    async def view_settings_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+
+        source_id  = globals.get_setting("source_chat_id", "Not set")
+        target_id  = globals.get_setting("target_chat_id", "Not set")
+        kw_enabled = globals.get_setting("keywords_enabled", False)
+        keywords   = globals.get_setting("keywords", [])
+        delay      = globals.get_setting("forward_delay", 3)
+
+        kw_status = "🟢 ON" if kw_enabled else "🔴 OFF"
+        kw_list   = ", ".join(f"`{k}`" for k in keywords) if keywords else "none"
+
+        bot_tok   = bot_manager.get_bot_token(user_id)
+        sess_str  = bot_manager.get_session_string(user_id)
+
+        text = (
+            "**⚙️ Current Settings**\n\n"
+            f"<blockquote>"
+            f"📡 Source: `{source_id}`\n"
+            f"🎯 Target: `{target_id}`\n"
+            f"⏱️ Delay: `{delay}s`\n"
+            f"🔍 Keywords: {kw_status} → {kw_list}\n"
+            f"🤖 Custom Bot: {'✅ Set' if bot_tok else '❌ Not set'}\n"
+            f"👤 User Bot: {'✅ Set' if sess_str else '❌ Not set'}"
+            f"</blockquote>"
+        )
+        await cq.message.edit_text(text, reply_markup=settings_keyboard())
+        await cq.answer()
+
+    # ── Add Bot Menu ──────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^add_bot_menu$"))
+    async def add_bot_menu_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+        await cq.message.edit_text(
+            "🤖 **Add Bot**\n\n"
+            "Choose what to add:\n\n"
+            "<blockquote>**Bot** — Your custom bot token from @BotFather (used as sender)\n"
+            "**User Bot** — Login via phone number (used to read private sources)</blockquote>",
+            reply_markup=add_bot_keyboard()
+        )
+        await cq.answer()
+
+    # ── Add BotFather Bot ─────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^add_botfather_bot$"))
+    async def add_botfather_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+        await cq.answer()
+        await cq.message.edit_text(
+            "🤖 **Add Your Bot**\n\n"
+            "Send your **BotFather Token**:\n"
+            "<blockquote>Example: `123456789:AAGQVElsB...`\n"
+            "⚠️ Token must be working and not revoked.\n"
+            "Send /cancel to abort.</blockquote>"
+        )
+        try:
+            reply: Message = await bot.listen(cq.message.chat.id, timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            await cq.message.edit_text("⏰ Timeout.", reply_markup=add_bot_keyboard())
+            return
+
+        if reply.text and reply.text.strip() == "/cancel":
+            await reply.delete()
+            await cq.message.edit_text("❌ Cancelled.", reply_markup=add_bot_keyboard())
+            return
+
+        token = reply.text.strip() if reply.text else ""
+        await reply.delete()
+        await cq.message.edit_text("⏳ Validating token...")
+
+        ok, info = await bot_manager.validate_bot_token(token)
+        if not ok:
+            await cq.message.edit_text(
+                f"❌ **Invalid token!**\n\n<blockquote>{info}</blockquote>",
+                reply_markup=add_bot_keyboard()
+            )
+            return
+
+        bot_manager.save_bot_token(user_id, token)
+
+        # Send confirmation to user
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ **Bot Added Successfully!**\n\n"
+                f"<blockquote>Bot: {info}\n"
+                f"Token: `{token[:20]}...`</blockquote>\n\n"
+                f"Your bot is now ready to use for forwarding!"
+            )
+        except Exception:
+            pass
+
+        await cq.message.edit_text(
+            f"✅ **Bot Added!**\n\n<blockquote>🤖 {info}\nToken verified ✅</blockquote>",
+            reply_markup=settings_keyboard()
+        )
+
+    # ── Add User Bot ──────────────────────────────────────────────────────────
+    @bot.on_callback_query(filters.regex("^add_user_bot$"))
+    async def add_user_bot_cb(client: Client, cq: CallbackQuery):
+        user_id = cq.from_user.id
+        if not is_auth(user_id):
+            await cq.answer("🙅 Not authorized!", show_alert=True)
+            return
+        await cq.answer()
+        await cq.message.edit_text("👤 **User Bot Login**\n\n⏳ Starting phone login flow...")
+
+        ok, result = await bot_manager.login_userbot_flow(bot, user_id, cq.message.chat.id)
+        if ok:
+            bot_manager.save_session_string(user_id, result)
+            await cq.message.edit_text(
+                "✅ **User Bot Added Successfully!**\n\n"
+                "<blockquote>Your session has been saved.\n"
+                "Check your Saved Messages for the session string.</blockquote>",
+                reply_markup=settings_keyboard()
+            )
+        else:
+            await cq.message.edit_text(
+                f"❌ **Login Failed**\n\n<blockquote>{result}</blockquote>",
+                reply_markup=add_bot_keyboard()
+            )
+
+    # ── Legacy text commands (kept for compatibility) ─────────────────────────
+    @bot.on_message(filters.command("setsource") & (filters.group | filters.private))
+    async def setsource_cmd(client: Client, m: Message):
+        user_id = m.from_user.id if m.from_user else 0
+        if not is_auth(user_id):
+            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+            return
+        await m.reply_text("Please use ⚙️ /settings → Set Source for a better experience.")
+
+    @bot.on_message(filters.command("settarget") & (filters.group | filters.private))
+    async def settarget_cmd(client: Client, m: Message):
+        user_id = m.from_user.id if m.from_user else 0
+        if not is_auth(user_id):
+            await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
+            return
+        await m.reply_text("Please use ⚙️ /settings → Set Target for a better experience.")
+
+    @bot.on_message(filters.command("viewsettings") & (filters.group | filters.private))
     async def viewsettings_cmd(client: Client, m: Message):
         user_id = m.from_user.id if m.from_user else 0
-        if user_id not in AUTH_USERS:
+        if not is_auth(user_id):
             await m.reply_text(f"<blockquote>🙅 Not authorized. Your ID: `{user_id}`</blockquote>")
             return
 
-        source_id    = globals.get_setting("source_chat_id", "Not set")
-        target_id    = globals.get_setting("target_chat_id", "Not set")
-        kw_enabled   = globals.get_setting("keywords_enabled", False)
-        keywords     = globals.get_setting("keywords", [])
-        delay        = globals.get_setting("forward_delay", 3)
+        source_id  = globals.get_setting("source_chat_id", "Not set")
+        target_id  = globals.get_setting("target_chat_id", "Not set")
+        kw_enabled = globals.get_setting("keywords_enabled", False)
+        keywords   = globals.get_setting("keywords", [])
+        delay      = globals.get_setting("forward_delay", 3)
 
-        kw_status = "🟢 ON" if kw_enabled else "🔴 OFF (forward all)"
-        if keywords and kw_enabled:
-            kw_list = "\n".join(f"  • `{k}`" for k in keywords)
-        else:
-            kw_list = "  (none set)"
+        kw_status = "🟢 ON" if kw_enabled else "🔴 OFF"
+        kw_list   = ", ".join(f"`{k}`" for k in keywords) if keywords else "none"
 
-        text = (
-            "**⚙️ Cinderella-Forwards — Current Settings**\n\n"
+        await m.reply_text(
+            f"**⚙️ Current Settings**\n\n"
             f"<blockquote>"
-            f"📡 **Source Chat ID:** `{source_id}`\n\n"
-            f"🎯 **Target Chat ID:** `{target_id}`\n\n"
-            f"⏱️ **Forward Delay:** `{delay}` seconds\n\n"
-            f"🔍 **Keyword Filter:** {kw_status}\n"
-            f"**Keywords:**\n{kw_list}"
-            f"</blockquote>\n\n"
-            "Use /setsource, /settarget, /setkeywords, /offkeywords, /setdelay to update."
+            f"📡 Source: `{source_id}`\n"
+            f"🎯 Target: `{target_id}`\n"
+            f"⏱️ Delay: `{delay}s`\n"
+            f"🔍 Keywords: {kw_status} → {kw_list}"
+            f"</blockquote>"
         )
-        await m.reply_text(text)
+
+    @bot.on_message(filters.command("setkeywords") & (filters.group | filters.private))
+    async def setkeywords_cmd(client: Client, m: Message):
+        await m.reply_text("Please use ⚙️ /settings → Set Keywords.")
+
+    @bot.on_message(filters.command("offkeywords") & (filters.group | filters.private))
+    async def offkeywords_cmd(client: Client, m: Message):
+        user_id = m.from_user.id if m.from_user else 0
+        if not is_auth(user_id):
+            await m.reply_text(f"<blockquote>🙅 Not authorized.</blockquote>")
+            return
+        globals.set_setting("keywords_enabled", False)
+        await m.reply_text("✅ Keywords disabled. All files will be forwarded.")
+
+    @bot.on_message(filters.command("setdelay") & (filters.group | filters.private))
+    async def setdelay_cmd(client: Client, m: Message):
+        await m.reply_text("Please use ⚙️ /settings → Set Delay.")
+
+    @bot.on_message(filters.command("addbot") & (filters.group | filters.private))
+    async def addbot_cmd(client: Client, m: Message):
+        user_id = m.from_user.id if m.from_user else 0
+        if not is_auth(user_id):
+            await m.reply_text(f"<blockquote>🙅 Not authorized.</blockquote>")
+            return
+        await m.reply_text(
+            "🤖 **Add Bot**\n\nChoose what to add:",
+            reply_markup=add_bot_keyboard()
+        )

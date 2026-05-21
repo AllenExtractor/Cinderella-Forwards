@@ -1,30 +1,24 @@
 """
-main.py — Cinderella-Forwards Bot
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+main.py — Cinderella-Forwards Bot (v2)
 
-COMMANDS (GROUP only, AUTH_USERS):
-  /start         — Welcome message with feature list
-  /setsource     — Set source channel/group ID (to forward FROM)
-  /settarget     — Set target channel/group ID (to forward TO)
-  /setkeywords   — Set keyword filter (1 or 2 word keywords)
-  /offkeywords   — Disable keyword filter (forward all)
-  /setdelay      — Set delay in seconds between forwards
-  /viewsettings  — View current settings
+NEW FEATURES:
+  • /forward command — bulk forward historical messages with skip support
+  • /settings — fully button-based settings menu
+  • /addbot — add your custom Bot (BotFather token) or User Bot (phone login)
+  • Works in both GROUP and PRIVATE/DM chats
+  • Live forwarding progress with percentage bar
+  • Stop button during forwarding
+  • Forwarding started / completed / stopped notifications
 
-COMMANDS (PRIVATE, OWNER only):
-  /broadcast     — Broadcast to all users/groups
-  /broadusers    — View all registered users/groups
-
-HOW IT WORKS:
-  • Bot monitors source channel/group for videos & PDFs
-  • If keyword filter ON  → only files with matching keyword in caption are forwarded
-  • If keyword filter OFF → all videos & PDFs are forwarded
-  • 3s delay (configurable) between each forwarded file
-  • Public source  → regular bot handles it (bot must be added to source)
-  • Private source → userbot (SESSION_STRING) handles reading;
-                     bot must be admin in TARGET
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMMANDS:
+  /start        — Welcome
+  /settings     — Full settings panel (button UI)
+  /forward      — Start bulk forwarding
+  /addbot       — Add custom bot/userbot
+  /viewsettings — Quick view settings
+  /offkeywords  — Disable keyword filter
+  /broadcast    — (Owner) Broadcast message
+  /broadusers   — (Owner) View all users
 """
 
 import os
@@ -54,7 +48,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Images ────────────────────────────────────────────────────────────────────
+# ── Images ─────────────────────────────────────────────────────────────────────
 image_list = [
     "https://graph.org/file/417cc7326cab9036c0152-f6a281db2a6975dfa9.jpg",
     "https://graph.org/file/033121ad32291bcaddd01-d91ae4a1f7ca9378fc.jpg",
@@ -63,7 +57,7 @@ image_list = [
     "https://graph.org/file/b23084c3e9124e14e18ec-d385f8f9c8b1635a2e.jpg",
 ]
 
-# ── Initialize Bot ────────────────────────────────────────────────────────────
+# ── Init Bot ───────────────────────────────────────────────────────────────────
 bot = Client(
     "cinderella_forwards_bot",
     api_id    = API_ID,
@@ -71,37 +65,40 @@ bot = Client(
     bot_token = BOT_TOKEN
 )
 
-# ── Initialize Userbot (only if SESSION_STRING is set) ────────────────────────
+# ── Init Userbot ───────────────────────────────────────────────────────────────
 userbot = None
 if SESSION_STRING:
     userbot = Client(
         "cinderella_forwards_userbot",
-        api_id        = API_ID,
-        api_hash      = API_HASH,
+        api_id         = API_ID,
+        api_hash       = API_HASH,
         session_string = SESSION_STRING
     )
-    logger.info("[Bot] Userbot session loaded from SESSION_STRING.")
+    logger.info("[Bot] Global userbot session loaded.")
 else:
-    logger.info("[Bot] No SESSION_STRING — userbot disabled. Only public sources supported.")
+    logger.info("[Bot] No global SESSION_STRING — per-user userbots only.")
 
 
-# ── Start keyboard ─────────────────────────────────────────────────────────────
-def get_start_keyboard():
+# ── Home keyboard ──────────────────────────────────────────────────────────────
+def get_start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📡 Set Source",   switch_inline_query_current_chat="/setsource"),
-         InlineKeyboardButton("🎯 Set Target",   switch_inline_query_current_chat="/settarget")],
-        [InlineKeyboardButton("🔍 Set Keywords", switch_inline_query_current_chat="/setkeywords"),
-         InlineKeyboardButton("🔕 Off Keywords", switch_inline_query_current_chat="/offkeywords")],
-        [InlineKeyboardButton("⏱️ Set Delay",    switch_inline_query_current_chat="/setdelay"),
-         InlineKeyboardButton("📊 View Settings",switch_inline_query_current_chat="/viewsettings")],
-        [InlineKeyboardButton("📢 Help & Info",  callback_data="help_info")],
-        [InlineKeyboardButton("🔍 Developer", url="https://t.me/CinderellaContactBot"),
-         InlineKeyboardButton("👑 Owner",     url=f"tg://openmessage?user_id={OWNER}")],
+        [
+            InlineKeyboardButton("⚙️ Settings", callback_data="open_settings"),
+            InlineKeyboardButton("▶️ Start Forward", callback_data="start_forward_hint"),
+        ],
+        [
+            InlineKeyboardButton("🤖 Add Bot", callback_data="add_bot_menu"),
+            InlineKeyboardButton("📖 Help", callback_data="help_info"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Developer", url="https://t.me/CinderellaContactBot"),
+            InlineKeyboardButton("👑 Owner", url=f"tg://openmessage?user_id={OWNER}"),
+        ],
     ])
 
 
-# ── /start ────────────────────────────────────────────────────────────────────
-@bot.on_message(filters.command("start"))
+# ── /start ─────────────────────────────────────────────────────────────────────
+@bot.on_message(filters.command("start") & (filters.group | filters.private))
 async def start_cmd(client: Client, m: Message):
     user_id = m.from_user.id if m.from_user else 0
     user_store.register_user(user_id)
@@ -125,10 +122,11 @@ async def start_cmd(client: Client, m: Message):
             f"**Hello Dear 👑 {first}!**\n\n"
             f"➠ I am **Cinderella-Forwards Bot** 🚀\n\n"
             f"**✨ What I do:**\n"
-            f"• 📡 Forward **Videos & PDFs** from source → target\n"
-            f"• 🔍 Keyword filter — only forward matching files\n"
+            f"• 📡 Forward **Videos, PDFs & Text** from source → target\n"
+            f"• 🔍 Keyword filter — forward only matching files\n"
             f"• ⏱️ Configurable delay between forwards\n"
-            f"• 🔐 Private source support via Userbot\n\n"
+            f"• 🔐 Private source via Userbot\n"
+            f"• 🤖 Use your own bot for forwarding\n\n"
             f"**📊 Current Config:**\n"
             f"<blockquote>"
             f"📡 Source: `{source_id}`\n"
@@ -142,11 +140,10 @@ async def start_cmd(client: Client, m: Message):
         caption = (
             f"**Hello 🫣 {first}!**\n\n"
             f"➠ I am **Cinderella-Forwards Bot**\n\n"
-            f"I forward Videos & PDFs from one channel to another "
-            f"with smart keyword filtering!\n\n"
-            f"<blockquote>You are currently **not authorized**.\n"
-            f"Contact the owner to get access.\n"
-            f"Your User ID: `{user_id}`</blockquote>\n\n"
+            f"I forward files from one channel to another with smart filtering!\n\n"
+            f"<blockquote>You are **not authorized**.\n"
+            f"Contact owner to get access.\n"
+            f"Your ID: `{user_id}`</blockquote>\n\n"
             f"💬 Contact: [{CREDIT}](tg://openmessage?user_id={OWNER}) 🔓"
         )
 
@@ -158,52 +155,60 @@ async def start_cmd(client: Client, m: Message):
     )
 
 
+# ── Start forward hint ─────────────────────────────────────────────────────────
+@bot.on_callback_query(filters.regex("start_forward_hint"))
+async def start_forward_hint_cb(client, cq):
+    await cq.answer(
+        "Use /forward command to start bulk forwarding!\nMake sure source & target are set in ⚙️ Settings first.",
+        show_alert=True
+    )
+
+
 # ── Help callback ──────────────────────────────────────────────────────────────
 @bot.on_callback_query(filters.regex("help_info"))
-async def help_info_cb(client, callback_query):
+async def help_info_cb(client, cq):
     text = (
         "**📖 Cinderella-Forwards — Help**\n\n"
-        "**Group Commands (Auth Users):**\n"
-        "• `/setsource` — Set source channel/group ID\n"
-        "• `/settarget` — Set target channel/group ID\n"
-        "• `/setkeywords` — Set keyword filter (1-2 words each)\n"
-        "• `/offkeywords` — Disable keyword filter\n"
-        "• `/setdelay` — Set delay between forwards (seconds)\n"
-        "• `/viewsettings` — View current settings\n\n"
-        "**Private Commands (Owner only):**\n"
-        "• `/broadcast` — Broadcast a message\n"
-        "• `/broadusers` — View all users/groups\n\n"
+        "**Commands (Auth Users):**\n"
+        "• `/start` — Welcome & home\n"
+        "• `/settings` — Full settings panel\n"
+        "• `/forward` — Start bulk forwarding\n"
+        "• `/addbot` — Add custom bot/userbot\n"
+        "• `/viewsettings` — Quick view settings\n"
+        "• `/offkeywords` — Disable keyword filter\n\n"
+        "**Owner Commands:**\n"
+        "• `/broadcast` — Broadcast message\n"
+        "• `/broadusers` — View all users\n\n"
         "**How Forwarding Works:**\n"
         "<blockquote>"
-        "• Bot monitors source channel for new Videos & PDFs\n"
-        "• If keywords ON → only files with matching caption are forwarded\n"
-        "• If keywords OFF → ALL videos & PDFs are forwarded\n"
-        "• 3s delay (default) between each file\n"
-        "• Public source → bot must be joined to source\n"
-        "• Private source → set SESSION_STRING env variable\n"
-        "• Target → bot must be Admin in target channel/group"
+        "• /forward → asks for skip number → starts forwarding\n"
+        "• Skip: send message number to skip older messages\n"
+        "• Send `none` to forward everything\n"
+        "• Live progress shown with percentage bar\n"
+        "• 🛑 Stop button available during forwarding\n"
+        "• Bot notifies target when done"
         "</blockquote>"
     )
-    await callback_query.message.edit_caption(
+    await cq.message.edit_caption(
         caption      = text,
         reply_markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="back_home")]
         ])
     )
-    await callback_query.answer()
+    await cq.answer()
 
 
 @bot.on_callback_query(filters.regex("back_home"))
-async def back_home_cb(client, callback_query):
-    first = callback_query.from_user.first_name if callback_query.from_user else "Friend"
+async def back_home_cb(client, cq):
+    first = cq.from_user.first_name if cq.from_user else "Friend"
     caption = (
         f"**Hello 👑 {first}!**\n\n"
         f"➠ I am **Cinderella-Forwards Bot**\n\n"
-        f"Use the buttons below to configure forwarding!\n\n"
+        f"Use the buttons below to configure and start forwarding!\n\n"
         f"➠ Made By : [{CREDIT}](tg://openmessage?user_id={OWNER}) 🦁"
     )
     try:
-        await callback_query.message.edit_media(
+        await cq.message.edit_media(
             InputMediaPhoto(
                 media   = random.choice(image_list),
                 caption = caption
@@ -211,11 +216,14 @@ async def back_home_cb(client, callback_query):
             reply_markup=get_start_keyboard()
         )
     except Exception:
-        await callback_query.message.edit_caption(
-            caption      = caption,
-            reply_markup = get_start_keyboard()
-        )
-    await callback_query.answer()
+        try:
+            await cq.message.edit_caption(
+                caption      = caption,
+                reply_markup = get_start_keyboard()
+            )
+        except Exception:
+            pass
+    await cq.answer()
 
 
 # ── Register all handlers ──────────────────────────────────────────────────────
@@ -224,7 +232,7 @@ register_broadcast_handlers(bot)
 register_forwarder_handlers(bot, userbot)
 
 
-# ── Flask web server (for Render.com) ─────────────────────────────────────────
+# ── Flask (for Render.com) ─────────────────────────────────────────────────────
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -241,8 +249,8 @@ def home():
  ╚██████╗██║██║ ╚███║██████╔╝███████╗██║  ██║███████╗███████╗███████╗██║  ██║
   ╚═════╝╚═╝╚═╝  ╚══╝╚═════╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
   </pre>
-  <h2 style="color:#e040fb">Cinderella-Forwards Bot — Running ✅</h2>
-  <p style="color:#aaa">Smart Video & PDF Forwarder with Keyword Filter</p>
+  <h2 style="color:#e040fb">Cinderella-Forwards Bot v2 — Running ✅</h2>
+  <p style="color:#aaa">Smart Forwarder • Button UI • Custom Bots • Live Progress</p>
   <p style="color:#666">Powered by Team★Toxic</p>
 </body>
 </html>
@@ -250,7 +258,7 @@ def home():
 
 @flask_app.route("/health")
 def health():
-    return {"status": "ok", "bot": "Cinderella-Forwards"}, 200
+    return {"status": "ok", "bot": "Cinderella-Forwards v2"}, 200
 
 
 def run_flask():
@@ -271,11 +279,10 @@ if __name__ == "__main__":
     else:
         logger.info("[Bot] Gunicorn detected — skipping internal Flask server.")
 
-    logger.info("[Bot] Starting Cinderella-Forwards Bot...")
+    logger.info("[Bot] Starting Cinderella-Forwards Bot v2...")
 
-    # Start userbot first (if configured)
     if userbot:
-        logger.info("[Bot] Starting userbot client...")
+        logger.info("[Bot] Starting global userbot client...")
         bot.run(userbot.start())
     else:
         bot.run()
