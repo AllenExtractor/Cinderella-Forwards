@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: cinderella-forwards
+    plan: free
+    env: docker
+    dockerfilePath: Dockerfile
+    branch: main
+    autoDeploy: false
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: OWNER
+        sync: false
+      - key: CREDIT
+        sync: false
+      - key: AUTH_USERS
+        sync: false
+      - key: SESSION_STRING
+        sync: false
+      - key: FORWARD_DELAY
+        value: "3"
+      - key: PORT
+        value: "8000"
